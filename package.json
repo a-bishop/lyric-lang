@@ -1,0 +1,29 @@
+{
+	"name": "lyric-lang",
+	"version": "0.0.0",
+	"private": true,
+	"scripts": {
+		"deploy": "wrangler deploy",
+		"dev": "wrangler dev",
+		"start": "wrangler dev",
+		"test": "vitest",
+		"cf-typegen": "wrangler types"
+	},
+	"devDependencies": {
+		"@cloudflare/vitest-pool-workers": "^0.12.4",
+		"@types/node": "^25.5.0",
+		"drizzle-kit": "^0.31.10",
+		"typescript": "^5.5.2",
+		"vitest": "~3.2.0",
+		"wrangler": "^4.76.0"
+	},
+	"dependencies": {
+		"@ai-sdk/anthropic": "^3.0.63",
+		"ai": "^6.0.134",
+		"drizzle-orm": "^0.45.1",
+		"express": "^5.2.1",
+		"hono": "^4.12.8",
+		"nanoid": "^5.1.7",
+		"zod": "^4.3.6"
+	}
+}
