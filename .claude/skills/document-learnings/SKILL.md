@@ -5,7 +5,7 @@ description: After resolving a tricky issue, prompt the user about documenting t
 
 ## When to Use
 
-After spending significant time debugging an issue (generally 15+ minutes of troubleshooting, or 5+ attempts at different solutions), ask the user if they want to document what was learned.
+After spending significant time debugging an issue (generally 5+ minutes of troubleshooting, or 5+ attempts at different solutions), ask the user if they want to document what was learned.
 
 ## What to Ask
 

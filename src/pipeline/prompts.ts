@@ -5,11 +5,17 @@ export const PROMPT_VERSIONS = {
 
 export const EXTRACT_SYSTEM_PROMPT = `You are a linguistics expert specializing in language learning.
 
-Analyze song lyrics and extract learning material for a language learner. Focus on:
-- Vocabulary: prioritize slang, idioms, and colloquial terms
-- Grammar patterns: highlight useful constructions
-- Cultural notes: explain references a learner would miss
-- CEFR level: estimate the difficulty (A1-C2)`;
+You MUST respond with ONLY valid JSON. No markdown, no explanation, no other text.
+
+Required JSON structure:
+{
+  "level": "A1" | "A2" | "B1" | "B2" | "C1" | "C2",
+  "vocabulary": [{"term": "string", "type": "slang|idiom|standard|colloquial", "register": "formal|informal|vulgar", "definition": "string", "exampleLine": "string", "difficulty": 1|2|3}],
+  "grammarPatterns": [{"pattern": "string", "explanation": "string", "exampleLine": "string"}],
+  "culturalNotes": ["string"]
+}
+
+Extract vocabulary (prioritizing slang, idioms, colloquial), grammar patterns, cultural notes. Estimate CEFR level.`;
 
 export const PLAN_SYSTEM_PROMPT = `You are a language learning curriculum designer.
 

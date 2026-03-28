@@ -1,9 +1,11 @@
-import { createAnthropic } from "@ai-sdk/anthropic";
-import { generateObject, generateText } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
+import { generateObject } from "ai";
 import { z } from "zod";
 import { PROMPT_VERSIONS, EXTRACT_SYSTEM_PROMPT } from "./prompts";
-import type { SongInput, ExtractedConcepts, Env, VocabItem, GrammarPattern } from "../types";
+import type { SongInput, ExtractedConcepts, Env } from "../types";
 import { createLogger } from "../logger";
+
+const GROQ_MODEL = "openai/gpt-oss-20b";
 
 const VocabItemSchema = z.object({
   term: z.string(),
@@ -110,8 +112,13 @@ export async function extractConcepts(
   jobId?: string
 ): Promise<ExtractionResult> {
   const logger = createLogger(jobId);
-  const anthropic = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
-  const model = env.ANTHROPIC_MODEL;
+  logger.info("Starting extraction", { hasGroqKey: !!env.GROQ_API_KEY, keyLength: env.GROQ_API_KEY?.length });
+  
+  const openai = createOpenAI({
+    apiKey: env.GROQ_API_KEY,
+    baseURL: "https://api.groq.com/openai/v1",
+  });
+  const model = GROQ_MODEL;
 
   const userPrompt = `Song: "${song.title}" by ${song.artist}${song.genre ? ` (${song.genre})` : ""}
 Source language: ${song.sourceLanguage}
@@ -120,7 +127,7 @@ Target language: ${song.targetLanguage}
 Lyrics:
 ${song.lyrics}
 
-Extract vocabulary (prioritizing slang, idioms, and colloquial terms), grammar patterns, cultural notes, and estimate the CEFR level.`;
+Extract vocabulary (prioritizing slang, idioms, colloquial), grammar patterns, cultural notes. Estimate CEFR level.`;
 
   let lastError: unknown;
 
@@ -134,13 +141,15 @@ Extract vocabulary (prioritizing slang, idioms, and colloquial terms), grammar p
 
     try {
       const start = Date.now();
+      logger.info("Calling Groq", { model, promptLength: userPrompt.length });
 
       const result = await generateObject({
-        model: anthropic(model),
+        model: openai(model),
         schema: ExtractedConceptsSchema,
         system: EXTRACT_SYSTEM_PROMPT,
         prompt: userPrompt,
       });
+      logger.info("Groq call succeeded", { durationMs: Date.now() - start });
 
       const durationMs = Date.now() - start;
       const concepts = result.object;
