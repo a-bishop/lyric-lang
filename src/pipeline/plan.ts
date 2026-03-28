@@ -1,15 +1,17 @@
-import { createAnthropic } from "@ai-sdk/anthropic";
+import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { PROMPT_VERSIONS, PLAN_SYSTEM_PROMPT } from "./prompts";
 import type { SongInput, ExtractedConcepts, LearningPlan, Env } from "../types";
 import { createLogger } from "../logger";
 
+const GROQ_MODEL = "openai/gpt-oss-20b";
+
 const ExerciseSchema = z.object({
   type: z.enum(["gap-fill", "translation", "multiple-choice", "free-write"]),
   prompt: z.string(),
   answer: z.string(),
-  hint: z.string().optional(),
+  hint: z.string(),
 });
 
 const ReviewScheduleSchema = z.object({
@@ -31,6 +33,15 @@ const LearningPlanSchema = z.object({
   estimatedHours: z.number(),
   units: z.array(LearningUnitSchema),
 });
+
+function parseJsonResponse<T>(text: string, schema: z.ZodType<T>): T {
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error("No JSON found in response");
+  }
+  const parsed = JSON.parse(jsonMatch[0]);
+  return schema.parse(parsed);
+}
 
 const MAX_RETRIES = 3;
 const INITIAL_BACKOFF_MS = 1000;
@@ -138,8 +149,11 @@ export async function generatePlan(
   jobId?: string
 ): Promise<PlanResult> {
   const logger = createLogger(jobId);
-  const anthropic = createAnthropic({ apiKey: env.ANTHROPIC_API_KEY });
-  const model = env.ANTHROPIC_MODEL;
+  const openai = createOpenAI({
+    apiKey: env.GROQ_API_KEY,
+    baseURL: "https://api.groq.com/openai/v1",
+  });
+  const model = GROQ_MODEL;
 
   const userPrompt = `Song: "${song.title}" by ${song.artist}
 Source language: ${song.sourceLanguage}
@@ -149,7 +163,13 @@ Estimated level: ${concepts.level}
 Extracted concepts:
 ${JSON.stringify(concepts, null, 2)}
 
-Create a learning plan with 3-5 units. Each unit should cluster related concepts, include exercises grounded in the lyrics, and have a spaced review schedule.`;
+Create a learning plan with 3-5 units. Each unit MUST have these exact fields:
+- order: number
+- title: string
+- focusType: "vocabulary" | "grammar" | "culture" | "pronunciation"
+- items: array of strings
+- exercises: array with {type, prompt, answer, hint}
+- reviewSchedule: {initialReviewDays: number, intervals: array of numbers}`;
 
   let lastError: unknown;
 
@@ -165,7 +185,7 @@ Create a learning plan with 3-5 units. Each unit should cluster related concepts
       const start = Date.now();
 
       const result = await generateObject({
-        model: anthropic(model),
+        model: openai(model),
         schema: LearningPlanSchema,
         system: PLAN_SYSTEM_PROMPT,
         prompt: userPrompt,
@@ -186,14 +206,13 @@ Create a learning plan with 3-5 units. Each unit should cluster related concepts
         estimatedHours: plan.estimatedHours,
       });
 
-      const usage = await result.usage;
       return {
         plan,
         log: {
           promptVersion: PROMPT_VERSIONS.plan,
           modelId: model,
-          inputTokens: usage.inputTokens ?? 0,
-          outputTokens: usage.outputTokens ?? 0,
+          inputTokens: result.usage.inputTokens ?? 0,
+          outputTokens: result.usage.outputTokens ?? 0,
           durationMs,
           rawRequest: JSON.stringify({ model, system: PLAN_SYSTEM_PROMPT, prompt: userPrompt }),
           rawResponse: JSON.stringify(result.response),

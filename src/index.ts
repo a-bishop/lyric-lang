@@ -14,6 +14,16 @@ interface JobEnv extends Env {
 
 const app = new Hono<{ Bindings: JobEnv }>();
 
+function requireAuth(c: { req: { header: (name: string) => string | undefined }; env: Env }) {
+  const authHeader = c.req.header("Authorization");
+  const expectedToken = `Bearer ${c.env.API_KEY}`;
+  
+  if (!authHeader || authHeader !== expectedToken) {
+    return false;
+  }
+  return true;
+}
+
 async function processJob(jobId: string, input: SongInput, env: Env) {
   const db = drizzle(env.DB);
   const logger = createLogger(jobId);
@@ -112,6 +122,10 @@ async function processJob(jobId: string, input: SongInput, env: Env) {
 }
 
 app.post("/ingest", async (c) => {
+  if (!requireAuth(c)) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
   const db = drizzle(c.env.DB);
   const jobId = nanoid();
   const now = new Date();
@@ -152,6 +166,10 @@ app.post("/ingest", async (c) => {
 });
 
 app.get("/jobs/:id", async (c) => {
+  if (!requireAuth(c)) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
   const db = drizzle(c.env.DB);
   const jobId = c.req.param("id");
 
@@ -179,7 +197,5 @@ app.get("/jobs/:id", async (c) => {
 });
 
 app.get("/health", (c) => c.json({ status: "ok" }));
-
-app.get("/ping", (c) => c.json({ pong: true }));
 
 export default app;
