@@ -56,3 +56,13 @@ npx wrangler deploy
 npx wrangler secret put GROQ_API_KEY
 npx wrangler secret put API_KEY
 ```
+
+## TODOs / Future Work
+
+- [ ] Cloudflare Queue for async processing (when 3+ LLM calls needed)
+- [ ] Audio input via Whisper transcription
+- [ ] Knowledge graph / prerequisite tracking ("don't re-teach subjunctive")
+- [ ] Multi-tenant support with D1 isolation
+- [ ] FSRS spaced repetition algorithm (replace hardcoded intervals)
+- [ ] Eval harness (run prompt versions against golden dataset)
+- [ ] Web UI (Hono serves static, or separate Pages project)
