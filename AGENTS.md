@@ -61,3 +61,26 @@ Retrieve API references and limits from:
 - `generateObject` returns a Promise for `usage` - must await: `const usage = await result.usage`
 - Token properties are `inputTokens` / `outputTokens` (not `promptTokens`/`completionTokens`)
 - Response is accessed via `result.response` (not `result.rawResponse`)
+
+## Groq LLM Integration
+
+### Models
+
+- Many Groq models get decommissioned frequently. Check available models via:
+  ```bash
+  curl https://api.groq.com/openai/v1/models -H "Authorization: Bearer $GROQ_API_KEY"
+  ```
+- Use model IDs exactly as returned by the API (e.g., `openai/gpt-oss-20b`, not `gpt-oss-20b`)
+
+### Structured Outputs
+
+- Only certain models support structured outputs (`json_schema` format)
+- Supported models include: `openai/gpt-oss-20b`, `openai/gpt-oss-120b`
+- When using `generateObject` from AI SDK, the model must support `json_schema` response format
+- If model doesn't support it, use `generateText` with manual JSON parsing
+
+### Schema Requirements
+
+- Groq strict mode requires all properties to be in the `required` array
+- Zod `.optional()` fields cause schema validation failures - either remove or include all fields
+- Add explicit field instructions to prompts for better schema compliance
