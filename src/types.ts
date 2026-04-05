@@ -58,8 +58,14 @@ export interface LearningPlan {
 
 export interface Env {
   DB: D1Database;
+  JOB_QUEUE: Queue;
   ANTHROPIC_API_KEY: string;
   ANTHROPIC_MODEL: string;
   GROQ_API_KEY: string;
   API_KEY: string;
+}
+
+export interface JobMessage {
+  jobId: string;
+  input: SongInput;
 }
