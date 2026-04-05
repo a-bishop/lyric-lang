@@ -1,11 +1,10 @@
-import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { PROMPT_VERSIONS, EXTRACT_SYSTEM_PROMPT } from "./prompts";
+import { createGroqClient, GROQ_MODEL } from "./llm-client";
+import { withRetry } from "./retry";
 import type { SongInput, ExtractedConcepts, Env } from "../types";
 import { createLogger } from "../logger";
-
-const GROQ_MODEL = "openai/gpt-oss-20b";
 
 const VocabItemSchema = z.object({
   term: z.string(),
@@ -30,27 +29,6 @@ const ExtractedConceptsSchema = z.object({
 });
 
 const MAX_RETRIES = 3;
-const INITIAL_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 10000;
-
-function isRetryableError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const message = error.message.toLowerCase();
-    if (message.includes("429") || message.includes("rate")) return true;
-    if (message.includes("500") || message.includes("502") || message.includes("503")) return true;
-    if (message.includes("timeout") || message.includes("timed out")) return true;
-    if (message.includes("internal") && message.includes("error")) return true;
-  }
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function randomJitter(baseMs: number): number {
-  return baseMs + Math.random() * baseMs * 0.5;
-}
 
 function validateExtractedConcepts(
   concepts: ExtractedConcepts,
@@ -113,11 +91,8 @@ export async function extractConcepts(
 ): Promise<ExtractionResult> {
   const logger = createLogger(jobId);
   logger.info("Starting extraction", { hasGroqKey: !!env.GROQ_API_KEY, keyLength: env.GROQ_API_KEY?.length });
-  
-  const openai = createOpenAI({
-    apiKey: env.GROQ_API_KEY,
-    baseURL: "https://api.groq.com/openai/v1",
-  });
+
+  const openai = createGroqClient(env.GROQ_API_KEY);
   const model = GROQ_MODEL;
 
   const userPrompt = `Song: "${song.title}" by ${song.artist}${song.genre ? ` (${song.genre})` : ""}
@@ -129,17 +104,8 @@ ${song.lyrics}
 
 Extract vocabulary (prioritizing slang, idioms, colloquial), grammar patterns, cultural notes. Estimate CEFR level.`;
 
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      const backoffMs = Math.min(INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
-      const delayMs = randomJitter(backoffMs);
-      logger.info(`Retry attempt ${attempt} after ${Math.round(delayMs)}ms backoff`, { attempt });
-      await sleep(delayMs);
-    }
-
-    try {
+  return withRetry(
+    async () => {
       const start = Date.now();
       logger.info("Calling Groq", { model, promptLength: userPrompt.length });
 
@@ -149,16 +115,13 @@ Extract vocabulary (prioritizing slang, idioms, colloquial), grammar patterns, c
         system: EXTRACT_SYSTEM_PROMPT,
         prompt: userPrompt,
       });
-      logger.info("Groq call succeeded", { durationMs: Date.now() - start });
 
       const durationMs = Date.now() - start;
       const concepts = result.object;
 
       const validation = validateExtractedConcepts(concepts, song.lyrics, logger);
       if (!validation.valid) {
-        logger.warn("Validation failed, retrying", { errors: validation.errors, attempt });
-        lastError = new Error(`Validation failed: ${validation.errors.join("; ")}`);
-        continue;
+        throw new Error(`Validation failed: ${validation.errors.join("; ")}`);
       }
 
       logger.info("Extraction successful", {
@@ -180,19 +143,14 @@ Extract vocabulary (prioritizing slang, idioms, colloquial), grammar patterns, c
           rawResponse: JSON.stringify(result.response),
         },
       };
-    } catch (error) {
-      lastError = error;
-      const isRetryable = isRetryableError(error);
-      logger.error(`Extraction attempt ${attempt + 1} failed`, {
-        error: error instanceof Error ? error.message : String(error),
-        retryable: isRetryable,
-      });
-
-      if (!isRetryable || attempt === MAX_RETRIES) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
+    },
+    {
+      maxRetries: MAX_RETRIES,
+      onRetry: (attempt, error) => {
+        logger.warn(`Extraction retry ${attempt}/${MAX_RETRIES}`, {
+          error: error.message,
+        });
+      },
+    },
+  );
 }

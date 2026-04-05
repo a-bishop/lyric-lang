@@ -1,11 +1,10 @@
-import { createOpenAI } from "@ai-sdk/openai";
 import { generateObject } from "ai";
 import { z } from "zod";
 import { PROMPT_VERSIONS, PLAN_SYSTEM_PROMPT } from "./prompts";
+import { createGroqClient, GROQ_MODEL } from "./llm-client";
+import { withRetry } from "./retry";
 import type { SongInput, ExtractedConcepts, LearningPlan, Env } from "../types";
 import { createLogger } from "../logger";
-
-const GROQ_MODEL = "openai/gpt-oss-20b";
 
 const ExerciseSchema = z.object({
   type: z.enum(["gap-fill", "translation", "multiple-choice", "free-write"]),
@@ -34,37 +33,7 @@ const LearningPlanSchema = z.object({
   units: z.array(LearningUnitSchema),
 });
 
-function parseJsonResponse<T>(text: string, schema: z.ZodType<T>): T {
-  const jsonMatch = text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error("No JSON found in response");
-  }
-  const parsed = JSON.parse(jsonMatch[0]);
-  return schema.parse(parsed);
-}
-
 const MAX_RETRIES = 3;
-const INITIAL_BACKOFF_MS = 1000;
-const MAX_BACKOFF_MS = 10000;
-
-function isRetryableError(error: unknown): boolean {
-  if (error instanceof Error) {
-    const message = error.message.toLowerCase();
-    if (message.includes("429") || message.includes("rate")) return true;
-    if (message.includes("500") || message.includes("502") || message.includes("503")) return true;
-    if (message.includes("timeout") || message.includes("timed out")) return true;
-    if (message.includes("internal") && message.includes("error")) return true;
-  }
-  return false;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function randomJitter(baseMs: number): number {
-  return baseMs + Math.random() * baseMs * 0.5;
-}
 
 function validateLearningPlan(
   plan: LearningPlan,
@@ -149,10 +118,7 @@ export async function generatePlan(
   jobId?: string
 ): Promise<PlanResult> {
   const logger = createLogger(jobId);
-  const openai = createOpenAI({
-    apiKey: env.GROQ_API_KEY,
-    baseURL: "https://api.groq.com/openai/v1",
-  });
+  const openai = createGroqClient(env.GROQ_API_KEY);
   const model = GROQ_MODEL;
 
   const userPrompt = `Song: "${song.title}" by ${song.artist}
@@ -171,17 +137,8 @@ Create a learning plan with 3-5 units. Each unit MUST have these exact fields:
 - exercises: array with {type, prompt, answer, hint}
 - reviewSchedule: {initialReviewDays: number, intervals: array of numbers}`;
 
-  let lastError: unknown;
-
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    if (attempt > 0) {
-      const backoffMs = Math.min(INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1), MAX_BACKOFF_MS);
-      const delayMs = randomJitter(backoffMs);
-      logger.info(`Retry attempt ${attempt} after ${Math.round(delayMs)}ms backoff`, { attempt });
-      await sleep(delayMs);
-    }
-
-    try {
+  return withRetry(
+    async () => {
       const start = Date.now();
 
       const result = await generateObject({
@@ -196,9 +153,7 @@ Create a learning plan with 3-5 units. Each unit MUST have these exact fields:
 
       const validation = validateLearningPlan(plan, concepts, logger);
       if (!validation.valid) {
-        logger.warn("Validation failed, retrying", { errors: validation.errors, attempt });
-        lastError = new Error(`Validation failed: ${validation.errors.join("; ")}`);
-        continue;
+        throw new Error(`Validation failed: ${validation.errors.join("; ")}`);
       }
 
       logger.info("Plan generation successful", {
@@ -218,19 +173,14 @@ Create a learning plan with 3-5 units. Each unit MUST have these exact fields:
           rawResponse: JSON.stringify(result.response),
         },
       };
-    } catch (error) {
-      lastError = error;
-      const isRetryable = isRetryableError(error);
-      logger.error(`Plan generation attempt ${attempt + 1} failed`, {
-        error: error instanceof Error ? error.message : String(error),
-        retryable: isRetryable,
-      });
-
-      if (!isRetryable || attempt === MAX_RETRIES) {
-        throw error;
-      }
-    }
-  }
-
-  throw lastError;
+    },
+    {
+      maxRetries: MAX_RETRIES,
+      onRetry: (attempt, error) => {
+        logger.warn(`Plan generation retry ${attempt}/${MAX_RETRIES}`, {
+          error: error.message,
+        });
+      },
+    },
+  );
 }
