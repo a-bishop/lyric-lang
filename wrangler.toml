@@ -11,3 +11,12 @@ binding = "DB"
 database_name = "lyric-lang"
 database_id = "d18a09db-ec9c-4ea0-8824-3c2865713d8f"
 migrations_dir = "src/db/migrations"
+
+[[queues.producers]]
+binding = "JOB_QUEUE"
+queue = "lyric-jobs"
+
+[[queues.consumers]]
+queue = "lyric-jobs"
+max_retries = 3
+dead_letter_queue = "lyric-jobs-dlq"

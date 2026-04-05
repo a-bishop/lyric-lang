@@ -5,120 +5,19 @@ import { nanoid } from "nanoid";
 import { jobs, songInputs, extractedConcepts, learningPlans, llmLogs } from "./db/schema";
 import { extractConcepts } from "./pipeline/extract";
 import { generatePlan } from "./pipeline/plan";
-import type { Env, SongInput } from "./types";
+import type { Env, SongInput, JobMessage } from "./types";
 import { createLogger } from "./logger";
 
-interface JobEnv extends Env {
-  executionCtx: ExecutionContext;
-}
-
-const app = new Hono<{ Bindings: JobEnv }>();
+const app = new Hono<{ Bindings: Env }>();
 
 function requireAuth(c: { req: { header: (name: string) => string | undefined }; env: Env }) {
   const authHeader = c.req.header("Authorization");
   const expectedToken = `Bearer ${c.env.API_KEY}`;
-  
+
   if (!authHeader || authHeader !== expectedToken) {
     return false;
   }
   return true;
-}
-
-async function processJob(jobId: string, input: SongInput, env: Env) {
-  const db = drizzle(env.DB);
-  const logger = createLogger(jobId);
-  const now = new Date();
-
-  try {
-    logger.info("Starting job processing");
-
-    await db.update(jobs).set({ status: "processing", updatedAt: now }).where(eq(jobs.id, jobId));
-
-    const { concepts, log: extractLog } = await extractConcepts(input, env, jobId);
-
-    await db.insert(extractedConcepts).values({
-      id: nanoid(),
-      jobId,
-      promptVersion: extractLog.promptVersion,
-      data: JSON.stringify(concepts),
-      createdAt: new Date(),
-    });
-
-    await db.insert(llmLogs).values({
-      id: nanoid(),
-      jobId,
-      stage: "extract",
-      promptVersion: extractLog.promptVersion,
-      modelId: extractLog.modelId,
-      inputTokens: extractLog.inputTokens,
-      outputTokens: extractLog.outputTokens,
-      durationMs: extractLog.durationMs,
-      rawRequest: extractLog.rawRequest,
-      rawResponse: extractLog.rawResponse,
-      createdAt: new Date(),
-    });
-
-    const { plan, log: planLog } = await generatePlan(input, concepts, env, jobId);
-
-    await db.insert(learningPlans).values({
-      id: nanoid(),
-      jobId,
-      promptVersion: planLog.promptVersion,
-      data: JSON.stringify(plan),
-      createdAt: new Date(),
-    });
-
-    await db.insert(llmLogs).values({
-      id: nanoid(),
-      jobId,
-      stage: "plan",
-      promptVersion: planLog.promptVersion,
-      modelId: planLog.modelId,
-      inputTokens: planLog.inputTokens,
-      outputTokens: planLog.outputTokens,
-      durationMs: planLog.durationMs,
-      rawRequest: planLog.rawRequest,
-      rawResponse: planLog.rawResponse,
-      createdAt: new Date(),
-    });
-
-    await db.update(jobs).set({ status: "complete", updatedAt: new Date() }).where(eq(jobs.id, jobId));
-
-    logger.info("Job completed successfully");
-  } catch (error) {
-    logger.error("Job processing failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-
-    const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId));
-    const currentRetryCount = job?.retryCount ?? 0;
-
-    if (currentRetryCount < 3) {
-      logger.info(`Scheduling retry ${currentRetryCount + 1}/3`);
-      await db
-        .update(jobs)
-        .set({
-          status: "pending",
-          retryCount: currentRetryCount + 1,
-          updatedAt: new Date(),
-        })
-        .where(eq(jobs.id, jobId));
-
-      const delayMs = 5000 * (currentRetryCount + 1);
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-
-      await processJob(jobId, input, env);
-    } else {
-      await db
-        .update(jobs)
-        .set({
-          status: "failed",
-          errorMessage: error instanceof Error ? error.message : String(error),
-          updatedAt: new Date(),
-        })
-        .where(eq(jobs.id, jobId));
-    }
-  }
 }
 
 app.post("/ingest", async (c) => {
@@ -160,7 +59,7 @@ app.post("/ingest", async (c) => {
     createdAt: now,
   });
 
-  c.executionCtx.waitUntil(processJob(jobId, input, c.env));
+  await c.env.JOB_QUEUE.send({ jobId, input } satisfies JobMessage);
 
   return c.json({ jobId, status: "pending" }, 202);
 });
@@ -198,4 +97,105 @@ app.get("/jobs/:id", async (c) => {
 
 app.get("/health", (c) => c.json({ status: "ok" }));
 
-export default app;
+const MAX_JOB_RETRIES = 3;
+
+export default {
+  fetch: app.fetch,
+
+  async queue(batch: MessageBatch<JobMessage>, env: Env): Promise<void> {
+    for (const msg of batch.messages) {
+      const { jobId, input } = msg.body;
+      const db = drizzle(env.DB);
+      const logger = createLogger(jobId);
+
+      try {
+        logger.info("Processing job from queue");
+        await db.update(jobs).set({ status: "processing", updatedAt: new Date() }).where(eq(jobs.id, jobId));
+
+        const { concepts, log: extractLog } = await extractConcepts(input, env, jobId);
+
+        await db.insert(extractedConcepts).values({
+          id: nanoid(),
+          jobId,
+          promptVersion: extractLog.promptVersion,
+          data: JSON.stringify(concepts),
+          createdAt: new Date(),
+        });
+
+        await db.insert(llmLogs).values({
+          id: nanoid(),
+          jobId,
+          stage: "extract",
+          promptVersion: extractLog.promptVersion,
+          modelId: extractLog.modelId,
+          inputTokens: extractLog.inputTokens,
+          outputTokens: extractLog.outputTokens,
+          durationMs: extractLog.durationMs,
+          rawRequest: extractLog.rawRequest,
+          rawResponse: extractLog.rawResponse,
+          createdAt: new Date(),
+        });
+
+        const { plan, log: planLog } = await generatePlan(input, concepts, env, jobId);
+
+        await db.insert(learningPlans).values({
+          id: nanoid(),
+          jobId,
+          promptVersion: planLog.promptVersion,
+          data: JSON.stringify(plan),
+          createdAt: new Date(),
+        });
+
+        await db.insert(llmLogs).values({
+          id: nanoid(),
+          jobId,
+          stage: "plan",
+          promptVersion: planLog.promptVersion,
+          modelId: planLog.modelId,
+          inputTokens: planLog.inputTokens,
+          outputTokens: planLog.outputTokens,
+          durationMs: planLog.durationMs,
+          rawRequest: planLog.rawRequest,
+          rawResponse: planLog.rawResponse,
+          createdAt: new Date(),
+        });
+
+        await db.update(jobs).set({ status: "complete", updatedAt: new Date() }).where(eq(jobs.id, jobId));
+
+        logger.info("Job completed successfully");
+        msg.ack();
+      } catch (error) {
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        logger.error("Job processing failed", { error: errorMessage });
+
+        const [job] = await db.select().from(jobs).where(eq(jobs.id, jobId));
+        const currentRetryCount = (job?.retryCount ?? 0) + 1;
+
+        if (currentRetryCount >= MAX_JOB_RETRIES) {
+          await db
+            .update(jobs)
+            .set({
+              status: "failed",
+              errorMessage,
+              retryCount: currentRetryCount,
+              updatedAt: new Date(),
+            })
+            .where(eq(jobs.id, jobId));
+          logger.error(`Job failed permanently after ${currentRetryCount} retries`);
+          msg.ack();
+        } else {
+          await db
+            .update(jobs)
+            .set({
+              status: "pending",
+              retryCount: currentRetryCount,
+              updatedAt: new Date(),
+            })
+            .where(eq(jobs.id, jobId));
+          logger.info(`Scheduling retry ${currentRetryCount}/${MAX_JOB_RETRIES}`);
+          msg.retry();
+        }
+      }
+    }
+  },
+};
